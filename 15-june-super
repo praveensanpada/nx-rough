@@ -1,0 +1,701 @@
+
+// -------------------------------------- Super Dash -------------------------------------------
+
+require('dotenv').config();
+const express = require('express');
+const reports = express.Router();
+const bodyParser = require("body-parser");
+const mysql = require('mysql');
+const constants = require('./constant.js');
+const logger = require('./logger');
+const pool = require('./dbcon');
+
+reports.use(bodyParser.json());
+reports.use(bodyParser.urlencoded({
+    extended: false
+}));
+
+
+reports.use(function (req, res, next) {
+
+    var token = req.headers['x-access-token'];
+
+    logger.logInfo({
+        "TYPE": "REQUEST",
+        "REQUEST_ID": req.id,
+        "API": req.url,
+        "IP_ADDRESS": req.clientIp,
+        "BODY": req.body,
+        "ACCESS_TOKEN ": token
+    });
+    if (!token) {
+        res.send(JSON.stringify({
+            "error_status": true,
+            "error": constants.err_desc.error_401,
+            "message": constants.customMessage.UNAUTHORISED
+        }))
+    } else {
+        jwt.verify(token, process.env.SECRET_KEY_AUTH, function (err, decoded) {
+            console.log(decoded)
+            if (err) {
+                logger.logError({
+                    "error": err,
+                    "request": req
+                });
+                res.send(JSON.stringify({
+                    "error_status": true,
+                    "error": constants.err_desc.error_401,
+                    "message": constants.customMessage.UNAUTHORISED
+                }))
+            } else {
+                pool.getConnection(function (err, con) {
+                    if (err) {
+                        logger.logError({
+                            "error": err,
+                            "request": req
+                        });
+                        res.send(JSON.stringify({
+                            "error_status": true,
+                            "error": constants.err_desc.error_409,
+                            "message": constants.customMessage.DB_CON_FAILED
+                        }))
+                    } else {
+                        var check_super_user = mysql.format("SELECT uuid, name, user_name, email, mobile, role, is_verified, active FROM su_users WHERE  id=? and active=1 LIMIT 1", [decoded.id]);
+                        con.query(check_super_user, (err, check_super_user_res) => {
+                            if (err) {
+                                logger.logError({
+                                    "error": err,
+                                    "request": req
+                                });
+                                res.send(JSON.stringify({
+                                    "error_status": true,
+                                    "error": constants.err_desc.error_500,
+                                    "message": constants.customMessage.QUERY_FAILED
+                                }))
+                            } else {
+                                if (check_super_user.length == 0) {
+                                    res.send(JSON.stringify({
+                                        "error_status": true,
+                                        "error": constants.err_desc.error_401,
+                                        "message": constants.customMessage.UNAUTHORISED
+                                    }))
+                                } else if (!check_super_user[0].active) {
+                                    res.send(JSON.stringify({
+                                        "error_status": true,
+                                        "error": constants.err_desc.error_401,
+                                        "message": constants.customMessage.CLIENT_ACCOUNT_BLOCKED
+                                    }))
+                                } else {
+                                    req.uuid = decoded.id;
+                                    req.super_name = check_super_user_res[0].name;
+                                    req.super_user_name = check_super_user_res[0].user_name;
+                                    req.email = check_super_user_res[0].email;
+                                    req.mobile = check_super_user_res[0].mobile;
+                                    req.role = check_super_user_res[0].role;
+                                    req.is_verified = check_super_user_res[0].is_verified;
+                                    req.active = check_super_user_res[0].active;
+                                    res.setHeader("Access-Control-Allow-Origin", "*");
+                                    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS,');
+                                    res.setHeader('Access-Control-Allow-Headers', 'origin, content-type, accept,x-access-token');
+                                    res.setHeader('Access-Control-Allow-Credentials', true);
+                                    next();
+                                }
+                            }
+                        })
+                        con.release();
+                    }
+                })
+            }
+        })
+    }
+})
+
+
+// get clients
+reports.post('/get_clients', (req, res, next) => {
+
+    var {
+        database_type
+    } = req.body;
+
+    if (database_type == undefined || database_type == null || database_type == '') {
+        res.send(JSON.stringify({
+            "error_status": true,
+            "error": constants.err_desc.error_400_1,
+            "message": constants.customMessage.BODY_MISSING
+        }))
+    } else {
+        pool.getConnection((err, con) => {
+            if (err) {
+                logger.logError({
+                    "error": err,
+                    "request": req
+                });
+                res.send(JSON.stringify({
+                    "error_status": true,
+                    "error": constants.err_desc.error_409,
+                    "message": constants.customMessage.DB_CON_FAILED
+                }))
+            } else {
+                var my_db_name;
+                if (database_type == 1) {
+                    my_db_name = process.env.DC_DB_NAME
+                } else if (database_type == 2) {
+                    my_db_name = process.env.EC_DB_NAME
+                } else {
+                    res.send(JSON.stringify({
+                        "error_status": true,
+                        "error": constants.err_desc.error_409,
+                        "message": "Database type error"
+                    }))
+                }
+                var my_sql_query = "SELECT * FROM " + my_db_name + ".client";
+                var get_clients = mysql.format(my_sql_query);
+                con.query(get_clients, (err, get_clients_res) => {
+                    if (err) {
+                        logger.logError({
+                            "error": err,
+                            "request": req
+                        });
+                        res.send(JSON.stringify({
+                            "error_status": true,
+                            "error": constants.err_desc.error_409,
+                            "message": constants.customMessage.DB_CON_FAILED
+                        }))
+                    } else {
+                        res.send(JSON.stringify({
+                            "error_status": false,
+                            "error": {},
+                            "message": constants.customMessage.DATA_RETURNED,
+                            "response": get_clients_res
+                        }))
+                    }
+                })
+                con.release();
+            }
+        })
+    }
+})
+
+// get client_settings by client_id
+reports.post('/get_client_settings_by_client_id', (req, res, next) => {
+
+    var {
+        client_id,
+        database_type
+    } = req.body;
+
+    if (client_id == undefined || client_id == null || client_id == '' || database_type == undefined || database_type == null || database_type == '') {
+        res.send(JSON.stringify({
+            "error_status": true,
+            "error": constants.err_desc.error_400_1,
+            "message": constants.customMessage.BODY_MISSING
+        }))
+    } else {
+        pool.getConnection((err, con) => {
+            if (err) {
+                logger.logError({
+                    "error": err,
+                    "request": req
+                });
+                res.send(JSON.stringify({
+                    "error_status": true,
+                    "error": constants.err_desc.error_409,
+                    "message": constants.customMessage.DB_CON_FAILED
+                }))
+            } else {
+                var my_db_name;
+                if (database_type == 1) {
+                    my_db_name = process.env.DC_DB_NAME
+                } else if (database_type == 2) {
+                    my_db_name = process.env.EC_DB_NAME
+                } else {
+                    res.send(JSON.stringify({
+                        "error_status": true,
+                        "error": constants.err_desc.error_409,
+                        "message": "Database type error"
+                    }))
+                }
+                var my_sql_query = "SELECT * FROM " + my_db_name + ".client_settings WHERE client_id = ?";
+                var get_client_settings = mysql.format(my_sql_query, [client_id]);
+                con.query(get_client_settings, (err, get_client_settings_res) => {
+                    if (err) {
+                        logger.logError({
+                            "error": err,
+                            "request": req
+                        });
+                        res.send(JSON.stringify({
+                            "error_status": true,
+                            "error": constants.err_desc.error_409,
+                            "message": constants.customMessage.DB_CON_FAILED
+                        }))
+                    } else {
+                        res.send(JSON.stringify({
+                            "error_status": false,
+                            "error": {},
+                            "message": constants.customMessage.DATA_RETURNED,
+                            "response": get_client_settings_res
+                        }))
+                    }
+                })
+                con.release();
+            }
+        })
+    }
+})
+
+// get client_app_settings api by client_id
+reports.post('/get_client_app_settings_by_client_id', (req, res, next) => {
+
+    var {
+        client_id,
+        database_type
+    } = req.body;
+
+    if (client_id == undefined || client_id == null || client_id == '' || database_type == undefined || database_type == null || database_type == '') {
+        res.send(JSON.stringify({
+            "error_status": true,
+            "error": constants.err_desc.error_400_1,
+            "message": constants.customMessage.BODY_MISSING
+        }))
+    } else {
+        pool.getConnection((err, con) => {
+            if (err) {
+                logger.logError({
+                    "error": err,
+                    "request": req
+                });
+                res.send(JSON.stringify({
+                    "error_status": true,
+                    "error": constants.err_desc.error_409,
+                    "message": constants.customMessage.DB_CON_FAILED
+                }))
+            } else {
+                var my_db_name;
+                if (database_type == 1) {
+                    my_db_name = process.env.DC_DB_NAME
+                } else if (database_type == 2) {
+                    my_db_name = process.env.EC_DB_NAME
+                } else {
+                    res.send(JSON.stringify({
+                        "error_status": true,
+                        "error": constants.err_desc.error_409,
+                        "message": "Database type error"
+                    }))
+                }
+                var my_sql_query = "SELECT * FROM " + my_db_name + ".client_app_settings WHERE client_id = ?";
+                var get_client_app_settings = mysql.format(my_sql_query, [client_id]);
+                con.query(get_client_app_settings, (err, get_client_app_settings_res) => {
+                    if (err) {
+                        logger.logError({
+                            "error": err,
+                            "request": req
+                        });
+                        res.send(JSON.stringify({
+                            "error_status": true,
+                            "error": constants.err_desc.error_409,
+                            "message": constants.customMessage.DB_CON_FAILED
+                        }))
+                    } else {
+                        res.send(JSON.stringify({
+                            "error_status": false,
+                            "error": {},
+                            "message": constants.customMessage.DATA_RETURNED,
+                            "response": get_client_app_settings_res
+                        }))
+                    }
+                })
+                con.release();
+            }
+        })
+    }
+})
+
+
+
+// update client_settings by client_id
+reports.post('/update_client_settings_by_client_id', (req, res, next) => {
+
+    var {
+        client_id,
+        database_type,
+        field_name,
+        field_type
+    } = req.body;
+
+    if (client_id == undefined || client_id == null || client_id == '' || database_type == undefined || database_type == null || database_type == '' || field_name == undefined || field_name == null || field_name == '' || field_type == undefined || field_type == null || field_type == '') {
+        res.send(JSON.stringify({
+            "error_status": true,
+            "error": constants.err_desc.error_400_1,
+            "message": constants.customMessage.BODY_MISSING
+        }))
+    } else {
+        pool.getConnection((err, con) => {
+            if (err) {
+                logger.logError({
+                    "error": err,
+                    "request": req
+                });
+                res.send(JSON.stringify({
+                    "error_status": true,
+                    "error": constants.err_desc.error_409,
+                    "message": constants.customMessage.DB_CON_FAILED
+                }))
+            } else {
+                var my_db_name;
+                if (database_type == 1) {
+                    my_db_name = process.env.DC_DB_NAME
+                } else if (database_type == 2) {
+                    my_db_name = process.env.EC_DB_NAME
+                } else {
+                    res.send(JSON.stringify({
+                        "error_status": true,
+                        "error": constants.err_desc.error_409,
+                        "message": "Database type error"
+                    }))
+                }
+                var my_sql_query = "SELECT * FROM " + my_db_name + ".client_settings WHERE client_id = ?";
+                var get_client_settings = mysql.format(my_sql_query, [client_id]);
+                con.query(get_client_settings, (err, get_client_settings_res) => {
+                    if (err) {
+                        logger.logError({
+                            "error": err,
+                            "request": req
+                        });
+                        res.send(JSON.stringify({
+                            "error_status": true,
+                            "error": constants.err_desc.error_409,
+                            "message": constants.customMessage.DB_CON_FAILED
+                        }))
+                    } else {
+                        if (get_client_settings_res.length > 0) {
+                            var my_sql_update_qry = "update " + my_db_name + ".client_settings set " + field_name + " = ? where client_id = ?";
+                            var update_client_settings_by_client_id = mysql.format(my_sql_update_qry, [field_type, client_id]);
+                            con.query(update_client_settings_by_client_id, (err, update_client_settings_by_client_id_res) => {
+                                if (err) {
+                                    logger.logError({
+                                        "error": err,
+                                        "request": req
+                                    });
+                                    res.send(JSON.stringify({
+                                        "error_status": true,
+                                        "error": constants.err_desc.error_501,
+                                        "message": constants.customMessage.QUERY_FAILED
+                                    }))
+                                } else {
+                                    res.send(JSON.stringify({
+                                        "error_status": false,
+                                        "error": {},
+                                        "message": "client settings updated",
+                                        "database_type": my_db_name
+                                    }))
+                                }
+                            })
+                        } else {
+                            res.send(JSON.stringify({
+                                "error_status": true,
+                                "error": constants.err_desc.error_501,
+                                "message": "client not found",
+                            }))
+                        }
+                    }
+                })
+                con.release();
+            }
+        })
+    }
+})
+
+
+
+// // update client_settings by client_id
+// reports.post('/update_client_settings_by_client_id', (req, res, next) => {
+
+//     var {
+//         client_id,
+//         database_type,
+//         product_module,
+//         order_module,
+//         billing_module,
+//         performance_module,
+//         stocks_module,
+//         collection_module,
+//         balance_module,
+//         branch_module,
+
+//         transport_module,
+//         payment_module,
+//         promotions_module,
+//         rewards_module,
+//         field_stocks_module,
+//         ms_nav_module,
+//         partner_module,
+//         tally_module,
+//         daily_dist_email_module,
+//         shipto_deliv_sms,
+//         dealer_auto_approval,
+
+//         expense_module,
+//         emp_network_module,
+//         clients_module,
+//         journey_plan,
+//         activities,
+//         attendance,
+//         multi_manager_module,
+//         manager_stats_email_module
+//     } = req.body;
+
+//     if (client_id == undefined || client_id == null || client_id == '' || database_type == undefined || database_type == null || database_type == '') {
+//         res.send(JSON.stringify({
+//             "error_status": true,
+//             "error": constants.err_desc.error_400_1,
+//             "message": constants.customMessage.BODY_MISSING
+//         }))
+//     } else {
+//         pool.getConnection((err, con) => {
+//             if (err) {
+//                 logger.logError({
+//                     "error": err,
+//                     "request": req
+//                 });
+//                 res.send(JSON.stringify({
+//                     "error_status": true,
+//                     "error": constants.err_desc.error_409,
+//                     "message": constants.customMessage.DB_CON_FAILED
+//                 }))
+//             } else {
+//                 var my_db_name;
+//                 if (database_type == 1) {
+//                     my_db_name = process.env.DC_DB_NAME
+//                 } else if (database_type == 2) {
+//                     my_db_name = process.env.EC_DB_NAME
+//                 } else {
+//                     res.send(JSON.stringify({
+//                         "error_status": true,
+//                         "error": constants.err_desc.error_409,
+//                         "message": "Database type error"
+//                     }))
+//                 }
+//                 var my_sql_query = "SELECT * FROM " + my_db_name + ".client_settings WHERE client_id = ?";
+//                 var get_client_settings = mysql.format(my_sql_query, [client_id]);
+//                 con.query(get_client_settings, (err, get_client_settings_res) => {
+//                     if (err) {
+//                         logger.logError({
+//                             "error": err,
+//                             "request": req
+//                         });
+//                         res.send(JSON.stringify({
+//                             "error_status": true,
+//                             "error": constants.err_desc.error_409,
+//                             "message": constants.customMessage.DB_CON_FAILED
+//                         }))
+//                     } else {
+//                         if (get_client_settings_res.length > 0) {
+//                             var my_sql_query, my_sql_array;
+//                             if (database_type == 1) {
+//                                 if (product_module == undefined || order_module == undefined || billing_module == undefined || transport_module == undefined || payment_module == undefined || performance_module == undefined || promotions_module == undefined || rewards_module == undefined || stocks_module == undefined || field_stocks_module == undefined || ms_nav_module == undefined || collection_module == undefined || partner_module == undefined || tally_module == undefined || balance_module == undefined || branch_module == undefined || daily_dist_email_module == undefined || shipto_deliv_sms == undefined || dealer_auto_approval == undefined) {
+//                                     res.send(JSON.stringify({
+//                                         "error_status": true,
+//                                         "error": constants.err_desc.error_400_1,
+//                                         "message": constants.customMessage.BODY_MISSING,
+//                                         "database_type": "DC APP"
+//                                     }))
+//                                 } else {
+//                                     my_sql_query = "update " + my_db_name + ".client_settings set product_module = ?, order_module = ?, billing_module = ?, transport_module = ?, payment_module = ?, performance_module = ?, promotions_module = ?, rewards_module = ?, stocks_module = ?, field_stocks_module = ?, ms_nav_module = ?, collection_module = ?, partner_module = ?, tally_module = ?, balance_module = ?, branch_module = ?, daily_dist_email_module = ?, shipto_deliv_sms = ?, dealer_auto_approval = ? where client_id = ?";
+//                                     my_sql_array = [product_module, order_module, billing_module, transport_module, payment_module, performance_module, promotions_module, rewards_module, stocks_module, field_stocks_module, ms_nav_module, collection_module, partner_module, tally_module, balance_module, branch_module, daily_dist_email_module, shipto_deliv_sms, dealer_auto_approval, client_id];
+//                                 }
+//                             } else {
+//                                 if (product_module == undefined || order_module == undefined || stocks_module == undefined || performance_module == undefined || expense_module == undefined || billing_module == undefined || emp_network_module == undefined || collection_module == undefined || clients_module == undefined || journey_plan == undefined || activities == undefined || attendance == undefined || balance_module == undefined || branch_module == undefined || balance_module == undefined || branch_module == undefined || multi_manager_module == undefined || manager_stats_email_module == undefined) {
+//                                     res.send(JSON.stringify({
+//                                         "error_status": true,
+//                                         "error": constants.err_desc.error_400_1,
+//                                         "message": constants.customMessage.BODY_MISSING,
+//                                         "database_type": "EC APP"
+//                                     }))
+//                                 } else {
+//                                     my_sql_query = "update " + my_db_name + ".client_settings set product_module = ?, order_module = ?, stocks_module = ?, performance_module = ?, expense_module = ?, billing_module = ?, emp_network_module = ?, collection_module = ?, clients_module = ?, journey_plan = ?, activities = ?, attendance = ?, balance_module = ?, branch_module= ?, multi_manager_module = ?, manager_stats_email_module = ? where client_id = ?";
+//                                     my_sql_array = [product_module, order_module, stocks_module, performance_module, expense_module, billing_module, emp_network_module, collection_module, clients_module, journey_plan, activities, attendance, balance_module, branch_module, multi_manager_module, manager_stats_email_module, client_id];
+//                                 }
+//                             }
+//                             var update_client_settings_by_client_id = mysql.format(my_sql_query, my_sql_array);
+//                             con.query(update_client_settings_by_client_id, (err, update_client_settings_by_client_id_res) => {
+//                                 if (err) {
+//                                     logger.logError({
+//                                         "error": err,
+//                                         "request": req
+//                                     });
+//                                     res.send(JSON.stringify({
+//                                         "error_status": true,
+//                                         "error": constants.err_desc.error_501,
+//                                         "message": constants.customMessage.QUERY_FAILED
+//                                     }))
+//                                 } else {
+//                                     res.send(JSON.stringify({
+//                                         "error_status": false,
+//                                         "error": {},
+//                                         "message": "client settings updated",
+//                                         "database_type": my_db_name
+//                                     }))
+//                                 }
+//                             })
+//                         } else {
+//                             res.send(JSON.stringify({
+//                                 "error_status": true,
+//                                 "error": constants.err_desc.error_501,
+//                                 "message": "client not found",
+//                             }))
+//                         }
+//                     }
+//                 })
+//                 con.release();
+//             }
+//         })
+//     }
+// })
+
+
+// update client_app_settings by client_id
+reports.post('/update_client_app_settings_by_client_id', (req, res, next) => {
+
+    var {
+        client_id,
+        database_type,
+        sub_order_process,
+        catalogue_skin_type,
+        max_ship_to,
+
+        catalogue_images,
+        search_images,
+        category_images,
+        prod_desc_image,
+        disable_ordering,
+        hide_offer_price,
+
+        create_dealer_button,
+        allow_dealer_edit,
+        allow_dealer_add_edit,
+        allow_add_media,
+        allow_remove_media,
+        allow_order_catalogue,
+        allow_dealer_transfer,
+        allow_tag_edit,
+        show_stocks_data,
+        perf_by_ord_val,
+        perf_by_ord_perf,
+        show_stocks_data_num,
+        allow_neg_sku_cart,
+        billing_type_dropdown,
+        legacy_code_required,
+        show_outstanding,
+    } = req.body;
+
+    if (client_id == undefined || client_id == null || client_id == '' || database_type == undefined || database_type == null || database_type == '') {
+        res.send(JSON.stringify({
+            "error_status": true,
+            "error": constants.err_desc.error_400_1,
+            "message": constants.customMessage.BODY_MISSING
+        }))
+    } else {
+        pool.getConnection((err, con) => {
+            if (err) {
+                logger.logError({
+                    "error": err,
+                    "request": req
+                });
+                res.send(JSON.stringify({
+                    "error_status": true,
+                    "error": constants.err_desc.error_409,
+                    "message": constants.customMessage.DB_CON_FAILED
+                }))
+            } else {
+                var my_db_name;
+                if (database_type == 1) {
+                    my_db_name = process.env.DC_DB_NAME
+                } else if (database_type == 2) {
+                    my_db_name = process.env.EC_DB_NAME
+                } else {
+                    res.send(JSON.stringify({
+                        "error_status": true,
+                        "error": constants.err_desc.error_409,
+                        "message": "Database type error"
+                    }))
+                }
+                var my_sql_query = "SELECT * FROM " + my_db_name + ".client_app_settings WHERE client_id = ?";
+                var get_client_app_settings = mysql.format(my_sql_query, [client_id]);
+                con.query(get_client_app_settings, (err, get_client_app_settings_res) => {
+                    if (err) {
+                        logger.logError({
+                            "error": err,
+                            "request": req
+                        });
+                        res.send(JSON.stringify({
+                            "error_status": true,
+                            "error": constants.err_desc.error_409,
+                            "message": constants.customMessage.DB_CON_FAILED
+                        }))
+                    } else {
+                        if (get_client_app_settings_res.length > 0) {
+                            var my_sql_query, my_sql_array;
+                            if (database_type == 1) {
+                                if (catalogue_images == undefined || search_images == undefined || category_images == undefined || prod_desc_image == undefined || disable_ordering == undefined || sub_order_process == undefined || hide_offer_price == undefined || catalogue_skin_type == undefined || max_ship_to == undefined) {
+                                    res.send(JSON.stringify({
+                                        "error_status": true,
+                                        "error": constants.err_desc.error_400_1,
+                                        "message": constants.customMessage.BODY_MISSING,
+                                        "database_type": "DC APP"
+                                    }))
+                                } else {
+                                    my_sql_query = "update " + my_db_name + ".client_app_settings set catalogue_images = ?, search_images = ?, category_images = ?, prod_desc_image = ?, disable_ordering= ?, sub_order_process= ?, hide_offer_price = ?, catalogue_skin_type = ?, max_ship_to = ? where client_id = ?";
+                                    my_sql_array = [catalogue_images, search_images, category_images, prod_desc_image, disable_ordering, sub_order_process, hide_offer_price, catalogue_skin_type, max_ship_to, client_id];
+                                }
+                            } else {
+                                if (create_dealer_button == undefined || allow_dealer_edit == undefined || allow_dealer_add_edit == undefined || allow_add_media == undefined || allow_remove_media == undefined || allow_order_catalogue == undefined || allow_dealer_transfer == undefined || allow_tag_edit == undefined || show_stocks_data == undefined || perf_by_ord_val == undefined || perf_by_ord_perf == undefined || show_stocks_data_num == undefined || allow_neg_sku_cart == undefined || catalogue_skin_type == undefined || billing_type_dropdown == undefined || sub_order_process == undefined || legacy_code_required == undefined || show_outstanding == undefined || max_ship_to == undefined) {
+                                    res.send(JSON.stringify({
+                                        "error_status": true,
+                                        "error": constants.err_desc.error_400_1,
+                                        "message": constants.customMessage.BODY_MISSING,
+                                        "database_type": "EC APP"
+                                    }))
+                                } else {
+                                    my_sql_query = "update " + my_db_name + ".client_app_settings set create_dealer_button = ?, allow_dealer_edit = ?, allow_dealer_add_edit = ?, allow_add_media = ?, allow_remove_media = ?, allow_order_catalogue = ?, allow_dealer_transfer = ?, allow_tag_edit = ?, show_stocks_data = ?, perf_by_ord_val = ?, perf_by_ord_perf = ?, show_stocks_data_num = ?, allow_neg_sku_cart = ?, catalogue_skin_type = ?, billing_type_dropdown = ?, sub_order_process = ?, legacy_code_required = ?, show_outstanding = ?, max_ship_to = ? where client_id = ?";
+                                    my_sql_array = [create_dealer_button, allow_dealer_edit, allow_dealer_add_edit, allow_add_media, allow_remove_media, allow_order_catalogue, allow_dealer_transfer, allow_tag_edit, show_stocks_data, perf_by_ord_val, perf_by_ord_perf, show_stocks_data_num, allow_neg_sku_cart, catalogue_skin_type, billing_type_dropdown, sub_order_process, legacy_code_required, show_outstanding, max_ship_to, client_id];
+                                }
+                            }
+                            var update_client_app_settings_by_client_id = mysql.format(my_sql_query, my_sql_array);
+                            con.query(update_client_app_settings_by_client_id, (err, update_client_app_settings_by_client_id_res) => {
+                                if (err) {
+                                    logger.logError({
+                                        "error": err,
+                                        "request": req
+                                    });
+                                    res.send(JSON.stringify({
+                                        "error_status": true,
+                                        "error": constants.err_desc.error_501,
+                                        "message": constants.customMessage.QUERY_FAILED
+                                    }))
+                                } else {
+                                    res.send(JSON.stringify({
+                                        "error_status": false,
+                                        "error": {},
+                                        "message": "client app settings updated",
+                                        "database_type": my_db_name
+                                    }))
+                                }
+                            })
+                        } else {
+                            res.send(JSON.stringify({
+                                "error_status": true,
+                                "error": constants.err_desc.error_501,
+                                "message": "client not found",
+                            }))
+                        }
+                    }
+                })
+                con.release();
+            }
+        })
+    }
+})
+
+
+module.exports = reports;
